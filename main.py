@@ -156,6 +156,8 @@ async def check_codechef_submission(username):
 async def verifycc(ctx, codechef_username: str):
     """Verify a CodeChef user by checking for a compilation error every 30 seconds for 5 minutes."""
     user = ctx.author
+    if ctx.channel.id != VERIFY_CHANNEL_ID:
+        return
     await user.send(f"Hello {user.mention}, please submit a compilation error on CodeChef. I'll check every 30 seconds for the next 5 minutes. Username: {codechef_username}")
 
     logging.info(f"Verification started for {user} with CodeChef username {codechef_username}")
