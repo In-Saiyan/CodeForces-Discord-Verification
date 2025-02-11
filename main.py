@@ -1,4 +1,5 @@
 import discord
+import json
 import asyncio
 import requests
 import sqlite3
@@ -176,25 +177,108 @@ async def verifycf(ctx, handle: str = None):
                 logger.info(f"User {user.id} verified and assigned role {role_name}.")
 
 @bot.command()
-async def cfinfo(ctx, member: discord.Member = None):
-    """Displays the info of the mentioned user or the user who invoked the command."""
+async def cfstats(ctx, member: discord.Member = None):
+    """Displays the number of solved questions categorized by difficulty and topics."""
     user_id = member.id if member else ctx.author.id
     handle = get_handle_from_userid(user_id)
+
+    if not handle:
+        await ctx.send("User not found in the database.")
+        return
+
+    url = f"https://codeforces.com/api/user.status?handle={handle}"
+    response = requests.get(url).json()
+
+    if "result" not in response:
+        await ctx.send("Failed to fetch Codeforces stats.")
+        return
+
+    solved_by_difficulty = {}
+    solved_by_topic = {}
+    solved_problems = set()  # Store solved problem IDs to avoid duplicates
+
+    for submission in response["result"]:
+        if submission["verdict"] == "OK":
+            problem = submission["problem"]
+            problem_id = (problem["contestId"], problem["index"])  # Unique identifier
+
+            if problem_id not in solved_problems:
+                solved_problems.add(problem_id)
+
+                difficulty = problem.get("rating", "Unrated")
+                tags = problem.get("tags", [])
+
+                solved_by_difficulty[difficulty] = solved_by_difficulty.get(difficulty, 0) + 1
+                for tag in tags:
+                    solved_by_topic[tag] = solved_by_topic.get(tag, 0) + 1
+
+    def create_embed(page):
+        embed = discord.Embed(title=f"Codeforces Stats for {handle}", url=f"https://codeforces.com/profile/{handle}", color=discord.Color.blue())
+        embed.set_thumbnail(url=member.avatar.url if member else ctx.author.avatar.url)
+
+        if page == 1:
+            embed.description = "**Solved Problems by Difficulty:**"
+            for difficulty, count in sorted(solved_by_difficulty.items(), key=lambda x: (x[0] == "Unrated", x[0])):
+                embed.add_field(name=f"Difficulty {difficulty}", value=str(count), inline=True)
+        else:
+            embed.description = "**Solved Problems by Topic:**"
+            for topic, count in sorted(solved_by_topic.items(), key=lambda x: -x[1]):
+                embed.add_field(name=topic.title(), value=str(count), inline=True)
+
+        embed.set_footer(text=f"Page {page}/2 | Use ⬅️ and ➡️ to navigate.")
+        return embed
+
+    message = await ctx.send(embed=create_embed(1))
+    await message.add_reaction("⬅️")
+    await message.add_reaction("➡️")
+
+    def check(reaction, user):
+        return user == ctx.author and reaction.message.id == message.id and str(reaction.emoji) in ["⬅️", "➡️"]
+
+    current_page = 1
+
+    while True:
+        try:
+            reaction, user = await bot.wait_for("reaction_add", timeout=60.0, check=check)
+
+            if str(reaction.emoji) == "➡️" and current_page == 1:
+                current_page = 2
+            elif str(reaction.emoji) == "⬅️" and current_page == 2:
+                current_page = 1
+
+            await message.edit(embed=create_embed(current_page))
+            await message.remove_reaction(reaction, user)
+
+        except asyncio.TimeoutError:
+            break
+        
+@bot.command()
+async def cfinfo(ctx, member: discord.Member = None):
+    """Displays the info of the mentioned user or the user who invoked the command in an embed."""
+    user_id = member.id if member else ctx.author.id
+    handle = get_handle_from_userid(user_id)
+    
     if handle:
         stats = get_codeforces_stats(handle)
         if stats:
-            await ctx.send(
-                f"**Codeforces Info for {handle}:**\n"
-                f"- Max Rating: {stats['max_rating']}\n"
-                f"- Rank: {stats['rank']}\n"
-                f"- Streak: {stats['streak']}\n"
-                f"- Questions Solved: {stats['questions_solved']}\n"
-                f"- Questions Solved Last Week: {stats['questions_solved_week']}"
+            embed = discord.Embed(
+                title=f"Codeforces Profile: {handle}",
+                url=f"https://codeforces.com/profile/{handle}",
+                color=discord.Color.blue()
             )
+            embed.set_thumbnail(url=member.avatar.url if member else ctx.author.avatar.url)
+            embed.add_field(name="Max Rating", value=stats["max_rating"], inline=True)
+            embed.add_field(name="Rank", value=stats["rank"].title(), inline=True)
+            embed.add_field(name="Streak", value=stats["streak"], inline=True)
+            embed.add_field(name="Questions Solved", value=stats["questions_solved"], inline=True)
+            embed.add_field(name="Solved Last Week", value=stats["questions_solved_week"], inline=True)
+
+            await ctx.send(embed=embed)
         else:
             await ctx.send("Failed to fetch Codeforces stats.")
     else:
         await ctx.send("User not found in the database.")
+
 
 # @bot.command()
 # async def help(ctx):
