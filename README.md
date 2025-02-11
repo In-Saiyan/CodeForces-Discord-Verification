@@ -66,4 +66,5 @@ This bot verifies Codeforces users on Discord by checking their submissions and 
 
 ## Info
 - Created by: **Aryan Singh**
+- Also check out the same project but with Discord.js: [ThunderBlaze/Cp_Discord_Bot](https://github.com/Thunder-Blaze/Cp_Discord_Bot)
 
