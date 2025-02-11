@@ -91,7 +91,7 @@ async def check_codechef_submission(username):
     
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
-    
+    rating = None
     try:
         driver.get(url)
         
