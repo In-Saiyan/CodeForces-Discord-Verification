@@ -534,7 +534,8 @@ async def verifycf(ctx, handle: str = None):
 async def unverifycf(ctx):
     """Unverifies the user and removes their Codeforces handle from the database."""
     user_id = ctx.author.id
-
+    if ctx.channel.id != VERIFY_CHANNEL_ID:
+        return
     cursor.execute("SELECT handle FROM verified_users WHERE user_id = ?", (user_id,))
     result = cursor.fetchone()
 
