@@ -26,6 +26,8 @@ ENV CHROMEDRIVER_BIN=/usr/local/bin/chromedriver
 
 WORKDIR /app
 
+RUN mkdir /app/data
+
 COPY . /app
 
 RUN pip install --no-cache-dir -r requirements.txt
