@@ -60,10 +60,11 @@ db.commit()
 logger.info("Database initialized and table verified_users ensured.")
 
 class StatsView(View):
-    def __init__(self, ctx, handle, solved_by_difficulty, solved_by_topic, member):
+    def __init__(self, ctx, handle, stats, solved_by_difficulty, solved_by_topic, member):
         super().__init__()
         self.ctx = ctx
         self.handle = handle
+        self.stats = stats
         self.solved_by_difficulty = solved_by_difficulty
         self.solved_by_topic = solved_by_topic
         self.member = member
@@ -79,6 +80,12 @@ class StatsView(View):
         embed.set_thumbnail(url=self.member.avatar.url if self.member else self.ctx.author.avatar.url)
 
         if self.current_page == 1:
+            embed.add_field(name="Max Rating", value=self.stats["max_rating"], inline=True)
+            embed.add_field(name="Rank", value=self.stats["rank"].title(), inline=True)
+            embed.add_field(name="Streak", value=self.stats["streak"], inline=True)
+            embed.add_field(name="Questions Solved", value=self.stats["questions_solved"], inline=True)
+            embed.add_field(name="Solved Last Week", value=self.stats["questions_solved_week"], inline=True)
+        elif self.current_page == 2:
             embed.description = "**Solved Problems by Difficulty:**"
             for difficulty, count in sorted(self.solved_by_difficulty.items(), key=lambda x: (x[0] == "Unrated", x[0])):
                 embed.add_field(name=f"Difficulty {difficulty}", value=str(count), inline=True)
@@ -87,19 +94,19 @@ class StatsView(View):
             for topic, count in sorted(self.solved_by_topic.items(), key=lambda x: -x[1]):
                 embed.add_field(name=topic.title(), value=str(count), inline=True)
 
-        embed.set_footer(text=f"Page {self.current_page}/2")
+        embed.set_footer(text=f"Page {self.current_page}/3")
         return embed
 
     @discord.ui.button(label="⬅️ Previous", style=discord.ButtonStyle.primary)
     async def previous_page(self, interaction: discord.Interaction, button: Button):
-        if self.current_page == 2:
-            self.current_page = 1
+        if self.current_page > 1:
+            self.current_page -= 1
             await self.update_message(interaction)
 
     @discord.ui.button(label="➡️ Next", style=discord.ButtonStyle.primary)
     async def next_page(self, interaction: discord.Interaction, button: Button):
-        if self.current_page == 1:
-            self.current_page = 2
+        if self.current_page < 3:
+            self.current_page += 1
             await self.update_message(interaction)
 
     async def update_message(self, interaction):
@@ -199,40 +206,80 @@ def get_solved_streak(handle):
     return "Not Available"
 
 
-
 @bot.command()
 async def verifycf(ctx, handle: str = None):
     """Verify your Codeforces account."""
     if ctx.channel.id != VERIFY_CHANNEL_ID:
         return
-    
+
     if not handle:
-        await ctx.send(f"{ctx.author.mention}, please provide your Codeforces handle. Usage: `!verifycf your_handle`")
+        await ctx.author.send(f"Please provide your Codeforces handle. Usage: `!verifycf your_handle`")
         logger.warning(f"User {ctx.author.id} attempted verification without a handle.")
         return
-    
+
     user = ctx.author
-    await user.send(f"Submit a compilation error on Codeforces and wait 5 minutes. Handle: {handle}")
-    await asyncio.sleep(300)
+    await user.send(f"Submit a compilation error on Codeforces. I'll check every 30 seconds for the next 5 minutes. Handle: {handle}")
+
+    for _ in range(10):  # Check 10 times (every 30 seconds for 5 minutes)
+        await asyncio.sleep(30)
+        if check_compilation_error(handle):
+            if verify_user(user.id, handle):
+                rank = get_codeforces_rank(handle)
+                role_name = ROLE_MAP.get(rank.lower(), "Newbie")
+                role = discord.utils.get(ctx.guild.roles, name=role_name)
+
+                if role:
+                    await user.add_roles(role)
+                    await user.send(f"✅ You have been verified and assigned the `{role_name}` role!")
+                    logger.info(f"User {user.id} verified and assigned role {role_name}.")
+                else:
+                    await user.send(f"✅ You have been verified, but I couldn't find the `{role_name}` role.")
+                    logger.warning(f"Role {role_name} not found for user {user.id}.")
+                return
     
-    if check_compilation_error(handle):
-        if verify_user(user.id, handle):
-            rank = get_codeforces_rank(handle)
-            role_name = ROLE_MAP.get(rank.lower(), "Newbie")
-            role = discord.utils.get(ctx.guild.roles, name=role_name)
-            if role:
-                await user.add_roles(role)
-                await ctx.send(f"{user.mention} has been verified and assigned the {role_name} role!")
-                logger.info(f"User {user.id} verified and assigned role {role_name}.")
+    await user.send("❌ Verification failed. I couldn't detect a compilation error within 5 minutes. Please try again.")
+    logger.warning(f"User {user.id} verification failed due to no detected compilation error.")
+
+
+# old
+# @bot.command()
+# async def verifycf(ctx, handle: str = None):
+#     """Verify your Codeforces account."""
+#     if ctx.channel.id != VERIFY_CHANNEL_ID:
+#         return
+    
+#     if not handle:
+#         await ctx.send(f"{ctx.author.mention}, please provide your Codeforces handle. Usage: `!verifycf your_handle`")
+#         logger.warning(f"User {ctx.author.id} attempted verification without a handle.")
+#         return
+    
+#     user = ctx.author
+#     await user.send(f"Submit a compilation error on Codeforces and wait 5 minutes. Handle: {handle}")
+#     await asyncio.sleep(300)
+    
+#     if check_compilation_error(handle):
+#         if verify_user(user.id, handle):
+#             rank = get_codeforces_rank(handle)
+#             role_name = ROLE_MAP.get(rank.lower(), "Newbie")
+#             role = discord.utils.get(ctx.guild.roles, name=role_name)
+#             if role:
+#                 await user.add_roles(role)
+#                 await ctx.send(f"{user.mention} has been verified and assigned the {role_name} role!")
+#                 logger.info(f"User {user.id} verified and assigned role {role_name}.")
 
 @bot.command()
 async def cfstats(ctx, member: discord.Member = None):
-    """Displays the number of solved questions categorized by difficulty and topics."""
+    """Displays the user's Codeforces stats, problems solved by difficulty, and problems solved by topic."""
     user_id = member.id if member else ctx.author.id
     handle = get_handle_from_userid(user_id)
 
     if not handle:
         await ctx.send("User not found in the database.")
+        return
+
+    stats = get_codeforces_stats(handle)
+    if not stats:
+        await ctx.send("Failed to fetch Codeforces stats.")
         return
 
     url = f"https://codeforces.com/api/user.status?handle={handle}"
@@ -244,16 +291,15 @@ async def cfstats(ctx, member: discord.Member = None):
 
     solved_by_difficulty = {}
     solved_by_topic = {}
-    solved_problems = set()  # Store solved problem IDs to avoid duplicates
+    solved_problems = set()
 
     for submission in response["result"]:
         if submission["verdict"] == "OK":
             problem = submission["problem"]
-            problem_id = (problem["contestId"], problem["index"])  # Unique identifier
+            problem_id = (problem["contestId"], problem["index"])
 
             if problem_id not in solved_problems:
                 solved_problems.add(problem_id)
-
                 difficulty = problem.get("rating", "Unrated")
                 tags = problem.get("tags", [])
 
@@ -261,7 +307,7 @@ async def cfstats(ctx, member: discord.Member = None):
                 for tag in tags:
                     solved_by_topic[tag] = solved_by_topic.get(tag, 0) + 1
 
-    view = StatsView(ctx, handle, solved_by_difficulty, solved_by_topic, member)
+    view = StatsView(ctx, handle, stats, solved_by_difficulty, solved_by_topic, member)
     view.message = await ctx.send(embed=view.create_embed(), view=view)
 
 # @bot.command()
@@ -340,32 +386,32 @@ async def cfstats(ctx, member: discord.Member = None):
 #         except asyncio.TimeoutError:
 #             break
         
-@bot.command()
-async def cfinfo(ctx, member: discord.Member = None):
-    """Displays the info of the mentioned user or the user who invoked the command in an embed."""
-    user_id = member.id if member else ctx.author.id
-    handle = get_handle_from_userid(user_id)
+# @bot.command()
+# async def cfinfo(ctx, member: discord.Member = None):
+#     """Displays the info of the mentioned user or the user who invoked the command in an embed."""
+#     user_id = member.id if member else ctx.author.id
+#     handle = get_handle_from_userid(user_id)
     
-    if handle:
-        stats = get_codeforces_stats(handle)
-        if stats:
-            embed = discord.Embed(
-                title=f"Codeforces Profile: {handle}",
-                url=f"https://codeforces.com/profile/{handle}",
-                color=discord.Color.blue()
-            )
-            embed.set_thumbnail(url=member.avatar.url if member else ctx.author.avatar.url)
-            embed.add_field(name="Max Rating", value=stats["max_rating"], inline=True)
-            embed.add_field(name="Rank", value=stats["rank"].title(), inline=True)
-            embed.add_field(name="Streak", value=stats["streak"], inline=True)
-            embed.add_field(name="Questions Solved", value=stats["questions_solved"], inline=True)
-            embed.add_field(name="Solved Last Week", value=stats["questions_solved_week"], inline=True)
+#     if handle:
+#         stats = get_codeforces_stats(handle)
+#         if stats:
+#             embed = discord.Embed(
+#                 title=f"Codeforces Profile: {handle}",
+#                 url=f"https://codeforces.com/profile/{handle}",
+#                 color=discord.Color.blue()
+#             )
+#             embed.set_thumbnail(url=member.avatar.url if member else ctx.author.avatar.url)
+#             embed.add_field(name="Max Rating", value=stats["max_rating"], inline=True)
+#             embed.add_field(name="Rank", value=stats["rank"].title(), inline=True)
+#             embed.add_field(name="Streak", value=stats["streak"], inline=True)
+#             embed.add_field(name="Questions Solved", value=stats["questions_solved"], inline=True)
+#             embed.add_field(name="Solved Last Week", value=stats["questions_solved_week"], inline=True)
 
-            await ctx.send(embed=embed)
-        else:
-            await ctx.send("Failed to fetch Codeforces stats.")
-    else:
-        await ctx.send("User not found in the database.")
+#             await ctx.send(embed=embed)
+#         else:
+#             await ctx.send("Failed to fetch Codeforces stats.")
+#     else:
+#         await ctx.send("User not found in the database.")
 
 
 # @bot.command()
