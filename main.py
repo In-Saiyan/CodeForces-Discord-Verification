@@ -1,4 +1,5 @@
 import discord
+from discord.ui import View, Button
 import json
 import asyncio
 import requests
@@ -57,6 +58,53 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS verified_users (
 db.commit()
 
 logger.info("Database initialized and table verified_users ensured.")
+
+class StatsView(View):
+    def __init__(self, ctx, handle, solved_by_difficulty, solved_by_topic, member):
+        super().__init__()
+        self.ctx = ctx
+        self.handle = handle
+        self.solved_by_difficulty = solved_by_difficulty
+        self.solved_by_topic = solved_by_topic
+        self.member = member
+        self.current_page = 1
+        self.message = None
+
+    def create_embed(self):
+        embed = discord.Embed(
+            title=f"Codeforces Stats for {self.handle}",
+            url=f"https://codeforces.com/profile/{self.handle}",
+            color=discord.Color.blue()
+        )
+        embed.set_thumbnail(url=self.member.avatar.url if self.member else self.ctx.author.avatar.url)
+
+        if self.current_page == 1:
+            embed.description = "**Solved Problems by Difficulty:**"
+            for difficulty, count in sorted(self.solved_by_difficulty.items(), key=lambda x: (x[0] == "Unrated", x[0])):
+                embed.add_field(name=f"Difficulty {difficulty}", value=str(count), inline=True)
+        else:
+            embed.description = "**Solved Problems by Topic:**"
+            for topic, count in sorted(self.solved_by_topic.items(), key=lambda x: -x[1]):
+                embed.add_field(name=topic.title(), value=str(count), inline=True)
+
+        embed.set_footer(text=f"Page {self.current_page}/2")
+        return embed
+
+    @discord.ui.button(label="⬅️ Previous", style=discord.ButtonStyle.primary)
+    async def previous_page(self, interaction: discord.Interaction, button: Button):
+        if self.current_page == 2:
+            self.current_page = 1
+            await self.update_message(interaction)
+
+    @discord.ui.button(label="➡️ Next", style=discord.ButtonStyle.primary)
+    async def next_page(self, interaction: discord.Interaction, button: Button):
+        if self.current_page == 1:
+            self.current_page = 2
+            await self.update_message(interaction)
+
+    async def update_message(self, interaction):
+        await interaction.response.edit_message(embed=self.create_embed(), view=self)
+
 
 def get_handle_from_userid(user_id):
     cursor.execute("SELECT handle FROM verified_users WHERE user_id = ?", (user_id,))
@@ -213,45 +261,84 @@ async def cfstats(ctx, member: discord.Member = None):
                 for tag in tags:
                     solved_by_topic[tag] = solved_by_topic.get(tag, 0) + 1
 
-    def create_embed(page):
-        embed = discord.Embed(title=f"Codeforces Stats for {handle}", url=f"https://codeforces.com/profile/{handle}", color=discord.Color.blue())
-        embed.set_thumbnail(url=member.avatar.url if member else ctx.author.avatar.url)
+    view = StatsView(ctx, handle, solved_by_difficulty, solved_by_topic, member)
+    view.message = await ctx.send(embed=view.create_embed(), view=view)
 
-        if page == 1:
-            embed.description = "**Solved Problems by Difficulty:**"
-            for difficulty, count in sorted(solved_by_difficulty.items(), key=lambda x: (x[0] == "Unrated", x[0])):
-                embed.add_field(name=f"Difficulty {difficulty}", value=str(count), inline=True)
-        else:
-            embed.description = "**Solved Problems by Topic:**"
-            for topic, count in sorted(solved_by_topic.items(), key=lambda x: -x[1]):
-                embed.add_field(name=topic.title(), value=str(count), inline=True)
+# @bot.command()
+# async def cfstats(ctx, member: discord.Member = None):
+#     """Displays the number of solved questions categorized by difficulty and topics."""
+#     user_id = member.id if member else ctx.author.id
+#     handle = get_handle_from_userid(user_id)
 
-        embed.set_footer(text=f"Page {page}/2 | Use ⬅️ and ➡️ to navigate.")
-        return embed
+#     if not handle:
+#         await ctx.send("User not found in the database.")
+#         return
 
-    message = await ctx.send(embed=create_embed(1))
-    await message.add_reaction("⬅️")
-    await message.add_reaction("➡️")
+#     url = f"https://codeforces.com/api/user.status?handle={handle}"
+#     response = requests.get(url).json()
 
-    def check(reaction, user):
-        return user == ctx.author and reaction.message.id == message.id and str(reaction.emoji) in ["⬅️", "➡️"]
+#     if "result" not in response:
+#         await ctx.send("Failed to fetch Codeforces stats.")
+#         return
 
-    current_page = 1
+#     solved_by_difficulty = {}
+#     solved_by_topic = {}
+#     solved_problems = set()  # Store solved problem IDs to avoid duplicates
 
-    while True:
-        try:
-            reaction, user = await bot.wait_for("reaction_add", timeout=60.0, check=check)
+#     for submission in response["result"]:
+#         if submission["verdict"] == "OK":
+#             problem = submission["problem"]
+#             problem_id = (problem["contestId"], problem["index"])  # Unique identifier
 
-            if str(reaction.emoji) == "➡️" and current_page == 1:
-                current_page = 2
-            elif str(reaction.emoji) == "⬅️" and current_page == 2:
-                current_page = 1
+#             if problem_id not in solved_problems:
+#                 solved_problems.add(problem_id)
 
-            await message.edit(embed=create_embed(current_page))
-            await message.remove_reaction(reaction, user)
+#                 difficulty = problem.get("rating", "Unrated")
+#                 tags = problem.get("tags", [])
 
-        except asyncio.TimeoutError:
-            break
+#                 solved_by_difficulty[difficulty] = solved_by_difficulty.get(difficulty, 0) + 1
+#                 for tag in tags:
+#                     solved_by_topic[tag] = solved_by_topic.get(tag, 0) + 1
+
+#     def create_embed(page):
+#         embed = discord.Embed(title=f"Codeforces Stats for {handle}", url=f"https://codeforces.com/profile/{handle}", color=discord.Color.blue())
+#         embed.set_thumbnail(url=member.avatar.url if member else ctx.author.avatar.url)
+
+#         if page == 1:
+#             embed.description = "**Solved Problems by Difficulty:**"
+#             for difficulty, count in sorted(solved_by_difficulty.items(), key=lambda x: (x[0] == "Unrated", x[0])):
+#                 embed.add_field(name=f"Difficulty {difficulty}", value=str(count), inline=True)
+#         else:
+#             embed.description = "**Solved Problems by Topic:**"
+#             for topic, count in sorted(solved_by_topic.items(), key=lambda x: -x[1]):
+#                 embed.add_field(name=topic.title(), value=str(count), inline=True)
+
+#         embed.set_footer(text=f"Page {page}/2 | Use ⬅️ and ➡️ to navigate.")
+#         return embed
+
+#     message = await ctx.send(embed=create_embed(1))
+#     await message.add_reaction("⬅️")
+#     await message.add_reaction("➡️")
+
+#     def check(reaction, user):
+#         return user == ctx.author and reaction.message.id == message.id and str(reaction.emoji) in ["⬅️", "➡️"]
+
+#     current_page = 1
+
+#     while True:
+#         try:
+#             reaction, user = await bot.wait_for("reaction_add", timeout=60.0, check=check)
+
+#             if str(reaction.emoji) == "➡️" and current_page == 1:
+#                 current_page = 2
+#             elif str(reaction.emoji) == "⬅️" and current_page == 2:
+#                 current_page = 1
+
+#             await message.edit(embed=create_embed(current_page))
+#             await message.remove_reaction(reaction, user)
+
+#         except asyncio.TimeoutError:
+#             break
         
 @bot.command()
 async def cfinfo(ctx, member: discord.Member = None):
