@@ -534,8 +534,8 @@ async def verifycf(ctx, handle: str = None):
 async def unverifycf(ctx):
     """Unverifies the user and removes their Codeforces handle from the database."""
     user_id = ctx.author.id
-    if ctx.channel.id != VERIFY_CHANNEL_ID:
-        return
+    # if ctx.channel.id != VERIFY_CHANNEL_ID:
+    #     return
     cursor.execute("SELECT handle FROM verified_users WHERE user_id = ?", (user_id,))
     result = cursor.fetchone()
 
@@ -555,8 +555,8 @@ async def unverifycf(ctx):
 @bot.command()
 async def unverifycc(ctx):
     """Unverifies the user and removes their CodeChef handle from the database."""
-    if ctx.channel.id != VERIFY_CHANNEL_ID:
-        return
+    # if ctx.channel.id != VERIFY_CHANNEL_ID:
+    #     return
     user_id = ctx.author.id
 
     ccursor.execute("SELECT codechef_username FROM verified_users WHERE discord_id = ?", (user_id,))
