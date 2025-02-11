@@ -43,7 +43,8 @@ ROLE_MAP = {
 
 bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
 
-db = sqlite3.connect("codeforces_users.db")
+db = sqlite3.connect("/app/data/codeforces_users.db") # for docker container
+# db = sqlite3.connect("./data/codeforces_users.db") # for local testing
 cursor = db.cursor()
 
 # Create table if it doesn't exist

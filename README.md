@@ -51,7 +51,7 @@ This bot verifies Codeforces users on Discord by checking their submissions and 
    ```
 2. Run the container:
    ```sh
-   docker run -d --env-file .env cf-discord-bot
+   docker run -v $(pwd)/data:/app/data -d cf-discord-bot 
    ```
 
 ## Caution
