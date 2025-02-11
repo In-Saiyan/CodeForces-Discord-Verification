@@ -3,3 +3,6 @@ requests
 asyncio
 pysqlite3-binary
 python-dotenv
+selenium
+bs4
+webdriver_manager

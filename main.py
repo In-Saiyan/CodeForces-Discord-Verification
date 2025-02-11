@@ -1,5 +1,6 @@
 import discord
 from discord.ui import View, Button
+import re
 import json
 import asyncio
 import requests
@@ -9,6 +10,14 @@ import logging
 import os
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
 
 # Setup logging
 LOG_DIR = "logs"
@@ -57,7 +66,250 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS verified_users (
 )''')
 db.commit()
 
+# Database setup
+cconn = sqlite3.connect('/app/data/codechef_users.db')
+ccursor = cconn.cursor()
+ccursor.execute('''
+    CREATE TABLE IF NOT EXISTS verified_users (
+        discord_id INTEGER PRIMARY KEY,
+        codechef_username TEXT,
+        rating INTEGER,
+        last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+''')
+cconn.commit()
+
 logger.info("Database initialized and table verified_users ensured.")
+
+# Function to scrape CodeChef for verification using Selenium
+async def check_codechef_submission(username):
+    url = f"https://www.codechef.com/users/{username}"
+    options = Options()
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+    
+    try:
+        driver.get(url)
+        
+        # Wait for rating to load
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "rating-number"))
+        )
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+        
+        # Extract rating
+        rating_tag = soup.find("div", class_="rating-number")
+        rating = int(rating_tag.text.strip()) if rating_tag else 0
+        
+        # Wait for the submissions table to load
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CLASS_NAME, "dataTable"))
+        )
+        
+        # Parse the updated page
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+        submissions_table = soup.select_one("table.dataTable tbody")
+        
+        if not submissions_table:
+            logging.info(f"User {username} has no submissions.")
+            return False, rating
+        
+        rows = submissions_table.find_all("tr")
+        logging.info(f"Total submissions found: {len(rows)}")
+        
+        # Debugging: Log first 3 rows
+        for i, row in enumerate(rows[:3]):
+            columns = row.find_all("td")
+            row_data = [col.text.strip() for col in columns]
+            # logging.info(f"Row {i+1}: {row_data}")
+        
+        # Check the most recent submission for compilation error
+        last_submission = rows[0]  # First row is the latest submission
+        result_td = last_submission.find_all("td")[2]  # 3rd column
+        result_span = result_td.find("span", {"title": True})
+        verdict = result_span["title"].strip().lower() if result_span else ""
+        
+        logging.info(f"Last submission status: {verdict}")
+        
+        if "compilation error" in verdict:
+            logging.info(f"User {username} has a compilation error in their last submission.")
+            return True, rating
+        
+        logging.info(f"User {username} does NOT have a compilation error in their last submission.")
+    
+    except Exception as e:
+        logging.error(f"Error in check_codechef_submission: {e}")
+    
+    finally:
+        driver.quit()
+    
+    return False, rating
+
+
+
+# Command to verify CodeChef users
+@bot.command()
+async def verifycc(ctx, codechef_username: str):
+    """Verify a CodeChef user by checking for a compilation error every 30 seconds for 5 minutes."""
+    user = ctx.author
+    await user.send(f"Hello {user.mention}, please submit a compilation error on CodeChef. I'll check every 30 seconds for the next 5 minutes. Username: {codechef_username}")
+
+    logging.info(f"Verification started for {user} with CodeChef username {codechef_username}")
+
+    for _ in range(10):  # Check 10 times (every 30 seconds for 5 minutes)
+        await asyncio.sleep(30)
+        verification_success, rating = await check_codechef_submission(codechef_username)
+
+        if verification_success and rating:
+            ccursor.execute("INSERT OR REPLACE INTO verified_users (discord_id, codechef_username, rating) VALUES (?, ?, ?)", 
+                            (user.id, codechef_username, rating))
+            cconn.commit()
+            await user.send(f"✅ Verification successful! Your CodeChef rating: {rating}")
+            await update_user_role_cc(user, rating)
+            return
+    
+    await user.send("❌ Verification failed. I couldn't detect a compilation error within 5 minutes. Please try again.")
+    logging.warning(f"User {user.id} verification failed for CodeChef username {codechef_username}.")
+
+
+# Function to update roles based on rating
+async def update_user_role_cc(member, rating):
+    guild = member.guild
+    role_mapping = {
+        0   : "★",
+        1400: "★★",
+        1600: "★★★",
+        1800: "★★★★",
+        2000: "★★★★★",
+        2200: "★★★★★★",
+        2500: "★★★★★★★"
+    }
+    assigned_role = None
+    for threshold, role_name in sorted(role_mapping.items(), reverse=True):
+        if rating >= threshold:
+            assigned_role = discord.utils.get(guild.roles, name=role_name)
+            break
+    
+    if assigned_role:
+        await member.add_roles(assigned_role)
+        logging.info(f"Assigned role {assigned_role} to {member}")
+
+# Periodic task to update roles
+@tasks.loop(hours=6)
+async def update_roles_task():
+    await bot.wait_until_ready()
+    guild = bot.guilds[0]  # Assuming bot is in one server
+    ccursor.execute("SELECT discord_id, rating FROM verified_users")
+    for discord_id, rating in ccursor.fetchall():
+        member = guild.get_member(discord_id)
+        if member:
+            await update_user_role_cc(member, rating)
+# crazy marker
+
+class CCStatsView(View):
+    def __init__(self, ctx, handle, stats, member):
+        super().__init__()
+        self.ctx = ctx
+        self.handle = handle
+        self.stats = stats
+        self.member = member
+        self.message = None
+
+    def get_codechef_pfp(self, handle):
+        """Fetch CodeChef profile picture using the API."""
+        url = f"https://codechef-api.vercel.app/handle/{handle}"
+        response = requests.get(url).json()
+        
+        return response.get("profile", self.ctx.author.avatar.url)  # Returns profile picture URL if found, else None
+
+
+    def create_embed(self):
+        embed = discord.Embed(
+            title=f"CodeChef Stats for {self.handle}",
+            url=f"https://www.codechef.com/users/{self.handle}",
+            color=discord.Color.orange()
+        )
+        embed.set_thumbnail(url=self.get_codechef_pfp(self.handle) or self.ctx.author.avatar.url)
+
+        embed.add_field(name="Rating", value=self.stats["max_rating"], inline=True)
+        embed.add_field(name="Stars", value=self.stats["stars"], inline=True)
+        embed.add_field(name="Global Rank", value=self.stats["global_rank"], inline=True)
+        embed.add_field(name="Country Rank", value=self.stats["country_rank"], inline=True)
+        embed.add_field(name="Total Problems Solved", value=self.stats["questions_solved"], inline=True)
+
+        return embed
+
+
+def get_codechef_handle_from_userid(user_id):
+    ccursor.execute("SELECT codechef_username FROM verified_users WHERE discord_id = ?", (user_id,))
+    result = ccursor.fetchone()
+    return result[0] if result else None
+
+def get_codechef_stats(handle):
+    url = f"https://www.codechef.com/users/{handle}"
+    response = requests.get(url).text
+    soup = BeautifulSoup(response, "html.parser")
+
+    # Extracting stats
+    rating = soup.find("div", class_="rating-number").text.strip() if soup.find("div", class_="rating-number") else "Unknown"
+    stars = soup.find("span", class_="rating").text.strip() if soup.find("span", class_="rating") else "Unknown"
+
+    # Extracting global & country rank from the correct section
+    global_rank = "Unknown"
+    country_rank = "Unknown"
+
+    rank_section = soup.find("div", class_="rating-ranks")
+    if rank_section:
+        ranks = rank_section.find_all("strong")
+        if len(ranks) >= 2:
+            global_rank = ranks[0].text.strip()
+            country_rank = ranks[1].text.strip()
+
+    # Extracting total problems solved
+    total_solved = "Unknown"
+    total_solved_tag = soup.find("h3", string=re.compile(r"Total Problems Solved: (\d+)"))
+    if total_solved_tag:
+        match = re.search(r"Total Problems Solved: (\d+)", total_solved_tag.text)
+        if match:
+            total_solved = match.group(1)
+
+    return {
+        "max_rating": rating,
+        "stars": stars,
+        "global_rank": global_rank,
+        "country_rank": country_rank,
+        "questions_solved": total_solved
+    }
+
+
+
+@bot.command()
+async def ccstats(ctx, member: discord.Member = None):
+    """Displays the user's CodeChef stats."""
+    user_id = member.id if member else ctx.author.id
+    handle = get_codechef_handle_from_userid(user_id)
+
+    if not handle:
+        await ctx.send("User not found in the database.")
+        return
+
+    stats = get_codechef_stats(handle)
+    if not stats:
+        await ctx.send("Failed to fetch CodeChef stats.")
+        return
+
+    view = CCStatsView(ctx, handle, stats, member)
+    view.message = await ctx.send(embed=view.create_embed())
+
+
+# crazy
+
+
+
 
 class StatsView(View):
     def __init__(self, ctx, handle, stats, solved_by_difficulty, solved_by_topic, member):
@@ -297,6 +549,27 @@ async def unverifycf(ctx):
     await ctx.send(f"✅ You have been unverified and your Codeforces handle `{handle}` has been removed from the database.")
     logger.info(f"User {user_id} ({handle}) unverified.")
 
+@bot.command()
+async def unverifycc(ctx):
+    """Unverifies the user and removes their CodeChef handle from the database."""
+    user_id = ctx.author.id
+
+    ccursor.execute("SELECT codechef_username FROM verified_users WHERE discord_id = ?", (user_id,))
+    result = ccursor.fetchone()
+
+    if not result:
+        await ctx.send("❌ You are not verified on CodeChef.")
+        return
+
+    handle = result[0]
+
+    # Remove user from database
+    ccursor.execute("DELETE FROM verified_users WHERE discord_id = ?", (user_id,))
+    cconn.commit()
+
+    await ctx.send(f"✅ You have been unverified and your CodeChef handle `{handle}` has been removed from the database.")
+    logger.info(f"User {user_id} ({handle}) unverified from CodeChef.")
+
 
 
 @bot.command()
@@ -342,118 +615,6 @@ async def cfstats(ctx, member: discord.Member = None):
     view = StatsView(ctx, handle, stats, solved_by_difficulty, solved_by_topic, member)
     view.message = await ctx.send(embed=view.create_embed(), view=view)
 
-# @bot.command()
-# async def cfstats(ctx, member: discord.Member = None):
-#     """Displays the number of solved questions categorized by difficulty and topics."""
-#     user_id = member.id if member else ctx.author.id
-#     handle = get_handle_from_userid(user_id)
-
-#     if not handle:
-#         await ctx.send("User not found in the database.")
-#         return
-
-#     url = f"https://codeforces.com/api/user.status?handle={handle}"
-#     response = requests.get(url).json()
-
-#     if "result" not in response:
-#         await ctx.send("Failed to fetch Codeforces stats.")
-#         return
-
-#     solved_by_difficulty = {}
-#     solved_by_topic = {}
-#     solved_problems = set()  # Store solved problem IDs to avoid duplicates
-
-#     for submission in response["result"]:
-#         if submission["verdict"] == "OK":
-#             problem = submission["problem"]
-#             problem_id = (problem["contestId"], problem["index"])  # Unique identifier
-
-#             if problem_id not in solved_problems:
-#                 solved_problems.add(problem_id)
-
-#                 difficulty = problem.get("rating", "Unrated")
-#                 tags = problem.get("tags", [])
-
-#                 solved_by_difficulty[difficulty] = solved_by_difficulty.get(difficulty, 0) + 1
-#                 for tag in tags:
-#                     solved_by_topic[tag] = solved_by_topic.get(tag, 0) + 1
-
-#     def create_embed(page):
-#         embed = discord.Embed(title=f"Codeforces Stats for {handle}", url=f"https://codeforces.com/profile/{handle}", color=discord.Color.blue())
-#         embed.set_thumbnail(url=member.avatar.url if member else ctx.author.avatar.url)
-
-#         if page == 1:
-#             embed.description = "**Solved Problems by Difficulty:**"
-#             for difficulty, count in sorted(solved_by_difficulty.items(), key=lambda x: (x[0] == "Unrated", x[0])):
-#                 embed.add_field(name=f"Difficulty {difficulty}", value=str(count), inline=True)
-#         else:
-#             embed.description = "**Solved Problems by Topic:**"
-#             for topic, count in sorted(solved_by_topic.items(), key=lambda x: -x[1]):
-#                 embed.add_field(name=topic.title(), value=str(count), inline=True)
-
-#         embed.set_footer(text=f"Page {page}/2 | Use ⬅️ and ➡️ to navigate.")
-#         return embed
-
-#     message = await ctx.send(embed=create_embed(1))
-#     await message.add_reaction("⬅️")
-#     await message.add_reaction("➡️")
-
-#     def check(reaction, user):
-#         return user == ctx.author and reaction.message.id == message.id and str(reaction.emoji) in ["⬅️", "➡️"]
-
-#     current_page = 1
-
-#     while True:
-#         try:
-#             reaction, user = await bot.wait_for("reaction_add", timeout=60.0, check=check)
-
-#             if str(reaction.emoji) == "➡️" and current_page == 1:
-#                 current_page = 2
-#             elif str(reaction.emoji) == "⬅️" and current_page == 2:
-#                 current_page = 1
-
-#             await message.edit(embed=create_embed(current_page))
-#             await message.remove_reaction(reaction, user)
-
-#         except asyncio.TimeoutError:
-#             break
-        
-# @bot.command()
-# async def cfinfo(ctx, member: discord.Member = None):
-#     """Displays the info of the mentioned user or the user who invoked the command in an embed."""
-#     user_id = member.id if member else ctx.author.id
-#     handle = get_handle_from_userid(user_id)
-    
-#     if handle:
-#         stats = get_codeforces_stats(handle)
-#         if stats:
-#             embed = discord.Embed(
-#                 title=f"Codeforces Profile: {handle}",
-#                 url=f"https://codeforces.com/profile/{handle}",
-#                 color=discord.Color.blue()
-#             )
-#             embed.set_thumbnail(url=member.avatar.url if member else ctx.author.avatar.url)
-#             embed.add_field(name="Max Rating", value=stats["max_rating"], inline=True)
-#             embed.add_field(name="Rank", value=stats["rank"].title(), inline=True)
-#             embed.add_field(name="Streak", value=stats["streak"], inline=True)
-#             embed.add_field(name="Questions Solved", value=stats["questions_solved"], inline=True)
-#             embed.add_field(name="Solved Last Week", value=stats["questions_solved_week"], inline=True)
-
-#             await ctx.send(embed=embed)
-#         else:
-#             await ctx.send("Failed to fetch Codeforces stats.")
-#     else:
-#         await ctx.send("User not found in the database.")
-
-
-# @bot.command()
-# async def help(ctx):
-#     await ctx.send(
-#         "**Available Commands:**\n"
-#         "- `!verifycf <handle>`: Verify your Codeforces account.\n"
-#         "- `!cfinfo [@user]` : Get Codeforces stats of yourself or another user.\n"
-#         "- `!help` : Show this help message."
-#     )
 
 @tasks.loop(hours=6)
 async def update_roles():
