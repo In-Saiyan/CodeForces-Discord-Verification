@@ -5,8 +5,9 @@ This bot verifies Codeforces users on Discord by checking their submissions and 
 
 ## Features
 - Users can verify their Codeforces account using `!verifycf <handle>`.
-- Retrieves and displays user stats via `!cfinfo [@user]`.
-- DIsplays question statistics of the user via  `!cfstats [@user]`.
+- Displays CodeForces question statistics of the user via  `!cfstats [@user]`.
+- Users can verify their CodeChef account using `!verifycc <handle>`.
+- Displays CodeChef profile statistics of the user via  `!ccstats [@user]`.
 - Automatically updates roles every 6 hours.
 - Removes unverified users from the database.
 
