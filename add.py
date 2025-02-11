@@ -1,7 +1,7 @@
 import sqlite3
 
 def add_user():
-    db = sqlite3.connect("codeforces_users.db")
+    db = sqlite3.connect("./data/codeforces_users.db")
     cursor = db.cursor()
     
     cursor.execute('''CREATE TABLE IF NOT EXISTS verified_users (

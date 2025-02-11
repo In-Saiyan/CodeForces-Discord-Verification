@@ -71,13 +71,21 @@ class StatsView(View):
         self.current_page = 1
         self.message = None
 
+    def get_codeforces_pfp(self, handle):
+        url = f"https://codeforces.com/api/user.info?handles={handle}"
+        response = requests.get(url).json()
+        
+        if "result" in response:
+            return response["result"][0].get("titlePhoto", None)  # This returns the profile picture URL
+        return None
+    
     def create_embed(self):
         embed = discord.Embed(
             title=f"Codeforces Stats for {self.handle}",
             url=f"https://codeforces.com/profile/{self.handle}",
             color=discord.Color.blue()
         )
-        embed.set_thumbnail(url=self.member.avatar.url if self.member else self.ctx.author.avatar.url)
+        embed.set_thumbnail(url=self.get_codeforces_pfp(self.handle) or self.ctx.author.avatar.url) # Use user's avatar if no profile picture found
 
         if self.current_page == 1:
             embed.add_field(name="Max Rating", value=self.stats["max_rating"], inline=True)
@@ -206,6 +214,19 @@ def get_solved_streak(handle):
     return "Not Available"
 
 
+@bot.event
+async def on_message(message):
+    """Deletes messages in the verification channel after 5 seconds."""
+    await bot.process_commands(message)
+    if message.channel.id == VERIFY_CHANNEL_ID and not message.author.bot:
+        await asyncio.sleep(5)
+        try:
+            await message.delete()
+        except discord.NotFound:
+            pass  # Message was already deleted
+
+      # Ensures commands still work
+
 @bot.command()
 async def verifycf(ctx, handle: str = None):
     """Verify your Codeforces account."""
@@ -215,9 +236,11 @@ async def verifycf(ctx, handle: str = None):
     if not handle:
         await ctx.author.send(f"Please provide your Codeforces handle. Usage: `!verifycf your_handle`")
         logger.warning(f"User {ctx.author.id} attempted verification without a handle.")
+        await ctx.message.delete()
         return
 
     user = ctx.author
+    await ctx.message.delete()
     await user.send(f"Submit a compilation error on Codeforces. I'll check every 30 seconds for the next 5 minutes. Handle: {handle}")
 
     for _ in range(10):  # Check 10 times (every 30 seconds for 5 minutes)
@@ -235,37 +258,46 @@ async def verifycf(ctx, handle: str = None):
                 else:
                     await user.send(f"✅ You have been verified, but I couldn't find the `{role_name}` role.")
                     logger.warning(f"Role {role_name} not found for user {user.id}.")
+
+                # Add user to the database
+                try:
+                    cursor.execute('''INSERT INTO verified_users (user_id, handle, rank, verified) 
+                                      VALUES (?, ?, ?, ?) 
+                                      ON CONFLICT(user_id) DO UPDATE SET handle = excluded.handle, rank = excluded.rank, verified = excluded.verified''',
+                                   (user.id, handle, rank, 1))
+                    db.commit()
+                    logger.info(f"User {user.id} ({handle}) added to the database.")
+                except sqlite3.Error as e:
+                    logger.error(f"Database error while adding user {user.id}: {e}")
+                    await user.send("⚠️ There was an issue saving your verification data. Please contact an admin.")
+
                 return
     
     await user.send("❌ Verification failed. I couldn't detect a compilation error within 5 minutes. Please try again.")
     logger.warning(f"User {user.id} verification failed due to no detected compilation error.")
 
+@bot.command()
+async def unverifycf(ctx):
+    """Unverifies the user and removes their Codeforces handle from the database."""
+    user_id = ctx.author.id
 
-# old
-# @bot.command()
-# async def verifycf(ctx, handle: str = None):
-#     """Verify your Codeforces account."""
-#     if ctx.channel.id != VERIFY_CHANNEL_ID:
-#         return
+    cursor.execute("SELECT handle FROM verified_users WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+
+    if not result:
+        await ctx.send("❌ You are not verified.")
+        return
+
+    handle = result[0]
     
-#     if not handle:
-#         await ctx.send(f"{ctx.author.mention}, please provide your Codeforces handle. Usage: `!verifycf your_handle`")
-#         logger.warning(f"User {ctx.author.id} attempted verification without a handle.")
-#         return
-    
-#     user = ctx.author
-#     await user.send(f"Submit a compilation error on Codeforces and wait 5 minutes. Handle: {handle}")
-#     await asyncio.sleep(300)
-    
-#     if check_compilation_error(handle):
-#         if verify_user(user.id, handle):
-#             rank = get_codeforces_rank(handle)
-#             role_name = ROLE_MAP.get(rank.lower(), "Newbie")
-#             role = discord.utils.get(ctx.guild.roles, name=role_name)
-#             if role:
-#                 await user.add_roles(role)
-#                 await ctx.send(f"{user.mention} has been verified and assigned the {role_name} role!")
-#                 logger.info(f"User {user.id} verified and assigned role {role_name}.")
+    # Remove user from database
+    cursor.execute("DELETE FROM verified_users WHERE user_id = ?", (user_id,))
+    db.commit()
+
+    await ctx.send(f"✅ You have been unverified and your Codeforces handle `{handle}` has been removed from the database.")
+    logger.info(f"User {user_id} ({handle}) unverified.")
+
+
 
 @bot.command()
 async def cfstats(ctx, member: discord.Member = None):
